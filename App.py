@@ -1,11 +1,23 @@
 from mtcnn import MTCNN
 import cv2
-
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
-
 import numpy as np
 
+faceProto = "opencv_face_detector.pbtxt"
+faceModel = "opencv_face_detector_uint8.pb"
+ageProto = "age_deploy.prototxt"
+ageModel = "age_net.caffemodel"
+genderProto = "gender_deploy.prototxt"
+genderModel = "gender_net.caffemodel"
+
+MODEL_MEAN_VALUES = (78.4263377603, 87.7689143744, 114.895847746)
+ageList = ['(0-2)', '(4-6)', '(8-12)', '(15-20)', '(25-32)', '(38-43)', '(48-53)', '(60-100)']
+genderList = ['Male', 'Female']
+
+faceNet = cv2.dnn.readNet(faceModel, faceProto)
+ageNet = cv2.dnn.readNet(ageModel, ageProto)
+genderNet = cv2.dnn.readNet(genderModel, genderProto)
 
 detector = MTCNN()
 # define HSV color ranges for eyes colors
@@ -36,8 +48,8 @@ FaceColor = {
 
 
 def getFaceDetails(image):
+    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
     result = detector.detect_faces(image)
-    print(result)
     getEyesColor(image, result)
     # Result is an array with all the bounding boxes detected. We know that for 'ivan.jpg' there is only one.
     bounding_box = result[0]['box']
@@ -61,6 +73,43 @@ def getFaceDetails(image):
     cv2.destroyAllWindows()
 
     print(result)
+
+
+def highlightFace(net, image, conf_threshold=0.7):
+    blob = cv2.dnn.blobFromImage(image, 1.0, (300, 300), [104, 117, 123], True, False)
+
+    net.setInput(blob)
+    detections = net.forward()
+    faceBoxes = []
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence > conf_threshold:
+            x1 = int(detections[0, 0, i, 3] * image.shape[1])
+            y1 = int(detections[0, 0, i, 4] * image.shape[0])
+            x2 = int(detections[0, 0, i, 5] * image.shape[1])
+            y2 = int(detections[0, 0, i, 6] * image.shape[0])
+            faceBoxes.append([x1, y1, x2, y2])
+    return faceBoxes
+
+
+def genderAndAgeDetection(image):
+    faceBoxes = highlightFace(faceNet, image)
+    padding = 20
+    for faceBox in faceBoxes:
+        print(faceBox)
+        face = image[max(0, faceBox[1] - padding): min(faceBox[3] + padding, image.shape[0] - 1),
+                     max(0, faceBox[0] - padding): min(faceBox[2] + padding, image.shape[1] - 1)]
+
+        blob = cv2.dnn.blobFromImage(face, 1.0, (227, 227), MODEL_MEAN_VALUES, swapRB=False)
+        genderNet.setInput(blob)
+        genderPreds = genderNet.forward()
+        gender = genderList[genderPreds[0].argmax()]
+        print(f'Gender: {gender}')
+
+        ageNet.setInput(blob)
+        agePreds = ageNet.forward()
+        age = ageList[agePreds[0].argmax()]
+        print(f'Age: {age[1:-1]} years')
 
 
 def check_color(hsv, color):
@@ -155,7 +204,8 @@ def getFaceColor(image, result):
 
 
 if __name__ == '__main__':
-    image = cv2.cvtColor(cv2.imread("selfie.jpg"), cv2.COLOR_BGR2RGB)
+    image = cv2.imread("1.jpg")
+    genderAndAgeDetection(image)
     getFaceDetails(image)
 
 
