@@ -3,6 +3,10 @@ import cv2
 import os
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 import numpy as np
+from sklearn.cluster import KMeans
+from collections import Counter
+import imutils
+import pprint
 
 faceProto = "opencv_face_detector.pbtxt"
 faceModel = "opencv_face_detector_uint8.pb"
@@ -20,7 +24,6 @@ ageNet = cv2.dnn.readNet(ageModel, ageProto)
 genderNet = cv2.dnn.readNet(genderModel, genderProto)
 
 detector = MTCNN()
-# define HSV color ranges for eyes colors
 class_name = ("Blue", "Blue Gray", "Brown", "Brown Gray", "Brown Black", "Green", "Green Gray", "Other")
 EyeColor = {
     class_name[0]: ((166, 21, 50), (240, 100, 85)),
@@ -32,32 +35,18 @@ EyeColor = {
     class_name[6]: ((60, 2, 25), (165, 20, 65))
 }
 
-# define HSV color ranges for faces colors
-name = ("1", "2", "3", "4", "5", "6", "7", "8", "other")
-FaceColor = {
-    name[0]: ((45, 34, 30), (60, 46, 40)),
-    name[1]: ((75, 57, 50), (90, 69, 60)),
-    name[2]: ((105, 80, 70), (120, 92, 80)),
-    name[3]: ((135, 103, 90), (150, 114, 100)),
-    name[4]: ((165, 126, 110), (180, 138, 120)),
-    name[5]: ((195, 149, 130), (210, 161, 140)),
-    name[6]: ((225, 172, 150), (240, 184, 160)),
-    name[7]: ((255, 195, 170), (255, 206, 180)),
-    name[8]: ((255, 218, 190), (255, 229, 200))
-}
-
 
 def getFaceDetails(image):
-    image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-    result = detector.detect_faces(image)
-    getEyesColor(image, result)
-    # Result is an array with all the bounding boxes detected. We know that for 'ivan.jpg' there is only one.
-    bounding_box = result[0]['box']
+    gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+    result = detector.detect_faces(gray_image)
+    getEyesColor(gray_image, result)
+
+    faceBox = result[0]['box']
     keypoints = result[0]['keypoints']
 
-    cv2.rectangle(image, (bounding_box[0], bounding_box[1]),
-                         (bounding_box[0]+bounding_box[2], bounding_box[1] + bounding_box[3]),
-                         (0, 155, 255), 2)
+    cv2.rectangle(image, (faceBox[0], faceBox[1]),
+                  (faceBox[0] + faceBox[2], faceBox[1] + faceBox[3]),
+                  (0, 155, 255), 2)
 
     cv2.circle(image, (keypoints['left_eye']), 2, (0, 155, 255), 2)
     cv2.circle(image, (keypoints['right_eye']), 2, (0, 155, 255), 2)
@@ -66,13 +55,8 @@ def getFaceDetails(image):
     cv2.circle(image, (keypoints['mouth_right']), 2, (0, 155, 255), 2)
 
     cv2.imwrite("image_draw.jpg", cv2.cvtColor(image, cv2.COLOR_RGB2BGR))
-    getFaceColor(image, result)
-
-    cv2.imshow('img', image)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
-
-    print(result)
+    print('\n')
+    return result
 
 
 def highlightFace(net, image, conf_threshold=0.7):
@@ -96,7 +80,6 @@ def genderAndAgeDetection(image):
     faceBoxes = highlightFace(faceNet, image)
     padding = 20
     for faceBox in faceBoxes:
-        print(faceBox)
         face = image[max(0, faceBox[1] - padding): min(faceBox[3] + padding, image.shape[0] - 1),
                      max(0, faceBox[0] - padding): min(faceBox[2] + padding, image.shape[1] - 1)]
 
@@ -114,7 +97,7 @@ def genderAndAgeDetection(image):
 
 def check_color(hsv, color):
     if (hsv[0] >= color[0][0]) and (hsv[0] <= color[1][0]) and (hsv[1] >= color[0][1]) and \
-    hsv[1] <= color[1][1] and (hsv[2] >= color[0][2]) and (hsv[2] <= color[1][2]):
+            hsv[1] <= color[1][1] and (hsv[2] >= color[0][2]) and (hsv[2] <= color[1][2]):
         return True
     return False
 
@@ -127,16 +110,7 @@ def find_class(hsv):
     return color_id
 
 
-def find_class2(hsv):
-    color_id = 8
-    for i in range(len(name) - 1):
-        if check_color(hsv, FaceColor[name[i]]):
-            color_id = i
-    return color_id
-
-
 def getEyesColor(image, result):
-
     imgMask = np.zeros((image.shape[0], image.shape[1], 1))
     h, w = image.shape[0:2]
 
@@ -166,47 +140,142 @@ def getEyesColor(image, result):
     for i in range(len(class_name)):
         print(class_name[i], ": ", round(eye_class[i] / total_vote * 100, 2), "%")
 
-    label = 'Dominant Eye Color: %s' % class_name[main_color_index]
-    cv2.putText(image, label, (left_eye[0] - 10, left_eye[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 255, 0))
+    #label = 'Dominant Eye Color: %s' % class_name[main_color_index]
+    #cv2.putText(image, label, (left_eye[0] - 10, left_eye[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 255, 0))
 
 
-def getFaceColor(image, result):
-    lower_skin = np.array([0, 48, 80], dtype=np.uint8)
-    upper_skin = np.array([20, 255, 255], dtype=np.uint8)
 
-    imgMask = np.zeros((image.shape[0], image.shape[1], 1))
-    h, w = image.shape[0:2]
+def getFilteredImage(image):
+    img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
 
-    left_eye = result[0]['keypoints']['left_eye']
-    right_eye = result[0]['keypoints']['right_eye']
-    eye_distance = np.linalg.norm(np.array(left_eye) - np.array(right_eye))
+    # Defining HSV Threadholds
+    lower_threshold = np.array([0, 48, 80], dtype=np.uint8)
+    upper_threshold = np.array([20, 255, 255], dtype=np.uint8)
 
-    startPoint = (left_eye[0], left_eye[1] + 20) if left_eye[1] > right_eye[1] else (right_eye[0], right_eye[1] + 20)
-    endPoint = (result[0]['keypoints']['nose'][0] - int(eye_distance / 2), result[0]['keypoints']['nose'][1]) if \
-        startPoint[0] != left_eye[0] else (result[0]['keypoints']['nose'][0] + int(eye_distance / 2), result[0]['keypoints']['nose'][1])
+    # Single Channel mask,denoting presence of colours in the about threshold
+    skinMask = cv2.inRange(img, lower_threshold, upper_threshold)
 
-    cv2.rectangle(imgMask, startPoint, endPoint, (255, 255, 255), -1)
-    cv2.rectangle(image, startPoint, endPoint, (255, 255, 255), 1)
+    # Cleaning up mask using Gaussian Filter
+    skinMask = cv2.GaussianBlur(skinMask, (3, 3), 0)
 
-    face_class = np.zeros(len(name), np.float)
-    for x in range(h):
-        for y in range(w):
-            if imgMask[x, y] != 0:
-                face_class[find_class2(image[x, y])] += 1
+    # Extracting skin from the threshold mask
+    skin = cv2.bitwise_and(img, img, mask=skinMask)
 
-    main_color_index = np.argmax(face_class[:len(face_class) - 1])
-    total_vote = face_class.sum()
+    # Return the Skin image
+    return cv2.cvtColor(skin, cv2.COLOR_HSV2BGR)
 
-    print("\n\nDominant Face Color: ", name[main_color_index])
-    print("\n **Face Color Percentage **")
-    for i in range(len(name)):
-        print(name[i], ": ", round(face_class[i] / total_vote * 100, 2), "%")
+
+def removeBlack(estimator_labels, estimator_cluster):
+    # Check for black
+    hasBlack = False
+
+    # Get the total number of occurance for each color
+    occurance_counter = Counter(estimator_labels)
+
+    # Quick lambda function to compare to lists
+    def compare(x, y):
+        return Counter(x) == Counter(y)
+
+    # Loop through the most common occuring color
+    for x in occurance_counter.most_common(len(estimator_cluster)):
+
+        # Quick List comprehension to convert each of RBG Numbers to int
+        color = [int(i) for i in estimator_cluster[x[0]].tolist()]
+
+        # Check if the color is [0,0,0] that if it is black
+        if compare(color, [0, 0, 0]) == True:
+            # delete the occurance
+            del occurance_counter[x[0]]
+            # remove the cluster
+            hasBlack = True
+            estimator_cluster = np.delete(estimator_cluster, x[0], 0)
+            break
+
+    return occurance_counter, estimator_cluster, hasBlack
+
+
+def getColorInformation(estimator_labels, estimator_cluster, hasThresholding=False):
+    colorInformation = []
+    hasBlack = False
+
+    # If a mask has be applied, remove th black
+    if hasThresholding:
+        occurance, cluster, black = removeBlack(estimator_labels, estimator_cluster)
+        occurance_counter = occurance
+        estimator_cluster = cluster
+        hasBlack = black
+    else:
+        occurance_counter = Counter(estimator_labels)
+
+    # Get the total sum of all the predicted occurances
+    totalOccurance = sum(occurance_counter.values())
+
+    # Loop through all the predicted colors
+    for x in occurance_counter.most_common(len(estimator_cluster)):
+        index = (int(x[0]))
+
+        # Quick fix for index out of bound when there is no threshold
+        index = (index - 1) if ((hasThresholding & hasBlack) & (int(index) != 0)) else index
+
+        # Get the color number into a list
+        color = estimator_cluster[index].tolist()
+
+        # Get the percentage of each color
+        color_percentage = (x[1] / totalOccurance)
+
+        # make the dictionary of the information
+        colorInfo = {"cluster_index": index, "color": color, "color_percentage": color_percentage}
+
+        # Add the dictionary to the list
+        colorInformation.append(colorInfo)
+
+    return colorInformation
+
+
+def extractDominantColor(img, number_of_colors=5, hasThresholding=False):
+    # Quick Fix Increase cluster counter to neglect the black(Read Article)
+    if hasThresholding:
+        number_of_colors += 1
+
+    # Convert Image into RGB Colours Space
+    img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    # Reshape Image
+    img = img.reshape((img.shape[0] * img.shape[1]), 3)
+
+    # Initiate KMeans Object
+    estimator = KMeans(n_clusters=number_of_colors, random_state=0)
+
+    # Fit the image
+    estimator.fit(img)
+
+    # Get Colour Information
+    colorInformation = getColorInformation(estimator.labels_, estimator.cluster_centers_, hasThresholding)
+    return colorInformation
+
+
+def prety_print_data(color_info):
+    for x in color_info:
+        print(pprint.pformat(x))
+        print()
 
 
 if __name__ == '__main__':
-    image = cv2.imread("1.jpg")
-    genderAndAgeDetection(image)
+    image = cv2.imread("kid1.jpg")
+
     getFaceDetails(image)
+    image = imutils.resize(image, width=250)
+    skin = getFilteredImage(image)
 
+    dominantColors = extractDominantColor(skin, hasThresholding=True)
 
+    # Show in the dominant color information
+    print("Color Information")
+    prety_print_data(dominantColors)
+
+    genderAndAgeDetection(image)
+
+    cv2.imshow('img', image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
 
