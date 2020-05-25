@@ -140,10 +140,6 @@ def getEyesColor(image, result):
     for i in range(len(class_name)):
         print(class_name[i], ": ", round(eye_class[i] / total_vote * 100, 2), "%")
 
-    #label = 'Dominant Eye Color: %s' % class_name[main_color_index]
-    #cv2.putText(image, label, (left_eye[0] - 10, left_eye[1] - 40), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (155, 255, 0))
-
-
 
 def getFilteredImage(image):
     img = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
