@@ -8,6 +8,7 @@ from collections import Counter
 import imutils
 import functools
 import pandas as pd
+import scipy.ndimage as snd
 
 faceProto = "opencv_face_detector.pbtxt"
 faceModel = "opencv_face_detector_uint8.pb"
@@ -33,6 +34,14 @@ FaceColor = {
     'medium skin tone': [(120, 92, 80), (180, 138, 120)],
     'medium-light skin tone': [(180, 138, 120), (240, 184, 160)],
     'light skin tone': [(240, 184, 160), (255, 229, 200)],
+}
+
+
+HairColor = {
+    'white hair': [(105, 105, 105), (220, 220, 220)],
+    'blond hair': [(255, 255, 0), (255, 255, 204)],
+    'red hair': [(255, 0, 0), (255, 160, 122)],
+    'brown hair': [(43, 29, 14), (159, 105, 60)]
 }
 
 
@@ -76,6 +85,7 @@ def genderAndAgeDetection(image):
 
 def extractSkin(image):
     img = image.copy()
+    img = imutils.resize(img, width=250)
     # BGR to HSV
     img = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
 
@@ -99,7 +109,6 @@ def extractSkin(image):
 def removeBlack(estimator_labels, estimator_cluster):
     # total number of occurrences for each color
     occurrence_counter = Counter(estimator_labels)
-
     # Loop through the most common occurring color
     for x in occurrence_counter.most_common(len(estimator_cluster)):
 
@@ -113,10 +122,17 @@ def removeBlack(estimator_labels, estimator_cluster):
             estimator_cluster = np.delete(estimator_cluster, x[0], 0)
             break
 
-    return occurrence_counter, estimator_cluster
+    colorInfo = []
+    for x in occurrence_counter.most_common(len(estimator_cluster)):
+        index = int(x[0])
+        index = index - 1 if int(index) != 0 else index
+        color = estimator_cluster[index].tolist()
+        color = [int(c) for c in color]
+        colorInfo.append({"index": index, "color": color})
+    return colorInfo
 
 
-def extractDominantColor(image, number_of_colors=2):
+def extractDominantColor(image, ColorPool, number_of_colors=3):
     img = image.copy()
 
     # Convert Image into RGB Colours Space
@@ -131,44 +147,88 @@ def extractDominantColor(image, number_of_colors=2):
     # Fit the image
     estimator.fit(img)
 
-    occurrence, cluster = removeBlack(estimator.labels_, estimator.cluster_centers_)
-    dominantColors = [int(c) for c in cluster[0]]
+    colorInfo = removeBlack(estimator.labels_, estimator.cluster_centers_)
 
     def compare(test_list1, test_list2):
         return functools.reduce(lambda i, j: i and j, map(lambda m, k: m >= k, test_list1, test_list2), True)
 
-    for skin in FaceColor:
-        if compare(dominantColors, FaceColor[skin][0]) and compare(FaceColor[skin][1], dominantColors):
-            return dominantColors, skin
+    for skin in ColorPool:
+        if compare(colorInfo[0]['color'], ColorPool[skin][0]) and compare(ColorPool[skin][1], colorInfo[0]['color']):
+            return colorInfo[0]['color'], skin
 
     return 'dominant color error'
 
 
+def hairDetection(image):
+    img = image.copy()
+    img = imutils.resize(img, width=500)
+
+    canny = cv2.Canny(img, 100, 150)
+    coords = np.nonzero(canny)
+    topmost_y = np.min(coords[0])
+
+    Z = img.reshape((-1, 3))
+    Z = np.float32(Z)
+
+    criteria = cv2.TERM_CRITERIA_EPS + cv2.TERM_CRITERIA_MAX_ITER, 10, 1.0
+    ret, label1, center1 = cv2.kmeans(Z, 4, None, criteria, 10, cv2.KMEANS_RANDOM_CENTERS)
+
+    center1 = np.uint8(center1)
+    res1 = center1[label1.flatten()]
+    output1 = res1.reshape(img.shape)
+
+    # find the index of the cluster of the hair
+    mask = label1.reshape(output1.shape[:-1])
+    khair = mask[(topmost_y + 20, 250)]
+
+    # get a mask that's True at all of the indices of hair's group
+    hairmask = mask == khair
+
+    # label all connected blobs in hairmask
+    bloblab = snd.label(hairmask, structure=np.ones((3, 3)))[0]
+
+    # create a mask for only the hair
+    haironlymask = bloblab == bloblab[topmost_y + 20, 250]
+
+    # get an image with just the hair and then crop it
+    justhair = np.where(haironlymask[..., None], img, [255, 255, 255])
+    nz = haironlymask.nonzero()
+    justhair = justhair[nz[0].min(): nz[0].max(), nz[1].min(): nz[1].max()]
+    return justhair.astype(np.uint8)
+
+
 if __name__ == '__main__':
-    image = cv2.imread("selfie2.jpg")
+    image = cv2.imread("huan.jpg")
+    image = imutils.resize(image, width=250)
 
     gender, age = genderAndAgeDetection(image)
     print(f'Gender: {gender}, Age: {age[1:-1]} years')
 
-    image = imutils.resize(image, width=250)
     skin = extractSkin(image)
+    dominantFaceColor = extractDominantColor(skin, FaceColor)
 
-    dominantColors = extractDominantColor(skin)
+    hairImg = hairDetection(image)
+    skinHair = extractSkin(hairImg)
+    hairColor = extractDominantColor(skinHair, HairColor)
 
     if age[1:-1] == '0-2':
-        description = 'baby: ' + dominantColors[1]
+        description = 'baby: ' + dominantFaceColor[1]
     elif gender == 'Male' and (age[1:-1] == '4-6' or age[1:-1] == '8-12'):
-        description = 'boy: ' + dominantColors[1]
+        description = 'boy: ' + dominantFaceColor[1]
     elif gender == 'Female' and (age[1:-1] == '4-6' or age[1:-1] == '8-12'):
-        description = 'girl: ' + dominantColors[1]
+        description = 'girl: ' + dominantFaceColor[1]
     elif gender == 'Male' and (age[1:-1] == '8-12' or age[1:-1] == '15-20' or age[1:-1] == '25-32'):
-        description = 'man: ' + dominantColors[1]
+        description = 'man: ' + dominantFaceColor[1]
     elif gender == 'Female' and (age[1:-1] == '8-12' or age[1:-1] == '15-20' or age[1:-1] == '25-32'):
-        description = 'woman: ' + dominantColors[1]
+        description = 'woman: ' + dominantFaceColor[1]
     elif gender == 'Male' and (age[1:-1] == '38-43' or age[1:-1] == '48-53' or age[1:-1] == '60-100'):
-        description = 'man: ' + dominantColors[1] + ', white hair'
-    elif gender == 'Female' and (age[1:-1] == '38-43' or age[1:-1] == '48-53' or age[1:-1] == '60-100'):
-        description = 'woman: ' + dominantColors[1] + ', white hair'
+        description = 'man: ' + dominantFaceColor[1]
+    elif gender == 'Female' and (age[1:-1] == '38-43' or age[1:-1] == '48-53'):
+        description = 'woman: ' + dominantFaceColor[1]
+    elif gender == 'Male' and (age[1:-1] == '60-100'):
+        description = 'old man: ' + dominantFaceColor[1]
+    elif gender == 'Female' and (age[1:-1] == '60-100'):
+        description = 'old woman: ' + dominantFaceColor[1]
 
     file_path = 'emoji_df.csv'
     data = pd.read_csv(file_path)
@@ -176,6 +236,7 @@ if __name__ == '__main__':
     print(my_emoji)
 
     cv2.imshow('img', image)
+    cv2.imshow('hairskin', hairImg)
     cv2.imshow('skin', skin)
     cv2.waitKey(0)
     cv2.destroyAllWindows()
